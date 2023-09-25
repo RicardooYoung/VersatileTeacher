@@ -1,0 +1,16 @@
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+path: datasets/cityscapes_foggy  # dataset root dir
+train: images/train  # train images (relative to 'path')
+val: images/val  # val images (relative to 'path')
+test: images/test
+
+# Classes
+names:
+  0: car
+  1: bicycle
+  2: person
+  3: rider
+  4: motorcycle
+  5: bus
+  6: truck
+  7: train
