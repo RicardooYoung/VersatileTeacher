@@ -1,0 +1,11 @@
+python train.py \
+    --cfg models/yolov5l_da.yaml \
+    --cfg models/yolov5l.yaml \
+    --weights weights/yolov5l_cityscapes_joint.pt \
+    --weights weights/yolov5l_cityscapes_joint.pt \
+    --data data/cityscapes.yaml \
+    --data data/cityscapes_foggy.yaml \
+    --device 0 \
+    --epochs 1 \
+    --batch-size 16 \
+    --name test
