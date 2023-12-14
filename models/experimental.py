@@ -160,7 +160,7 @@ class ImageDomainClassifier(nn.Module):
         self.const = const
 
     def forward(self, x):
-        if self.training == True:
+        if self.training:
             x = GRL.grad_reverse(x, self.const)
             x = self.conv(x)
             x = self.flatten(x)
