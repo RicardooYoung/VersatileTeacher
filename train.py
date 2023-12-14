@@ -82,6 +82,7 @@ from utils.general import (
     generate_mask_from_labels,
     cal_thres,
     cal_density,
+    CosineDecayWithWarmup
 )
 from utils.loggers import Loggers
 from utils.loggers.comet.comet_utils import check_comet_resume
@@ -308,18 +309,6 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             )
         del ckpt, csd
 
-    # DP mode
-    # if cuda and RANK == -1 and torch.cuda.device_count() > 1:
-    #     LOGGER.warning('WARNING ⚠️ DP not recommended, use torch.distributed.run for best DDP Multi-GPU results.\n'
-    #                    'See Multi-GPU Tutorial at https://github.com/ultralytics/yolov5/issues/475 to get started.')
-    #     model[0] = torch.nn.DataParallel(model[0])
-
-    # SyncBatchNorm
-    # if opt.sync_bn and cuda and RANK != -1:
-    #     for i in range(len(model)):
-    #         model[i] = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model[i]).to(device)
-    #     LOGGER.info('Using SyncBatchNorm()')
-
     # Trainloader
     train_loader = []
     datasets = []
@@ -352,7 +341,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         labels0 = np.concatenate(dataset0.labels, 0)
         mlc0 = int(labels0[:, 0].max())  # max label class
         assert (
-            mlc0 < nc
+                mlc0 < nc
         ), f"Label class {mlc0} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
         train_loader.append(train_loader0)
         datasets.append(dataset0)
@@ -380,18 +369,14 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
         if not resume:
             if not opt.noautoanchor:
-                for i in range(len(datasets)):
+                for j in range(len(datasets)):
                     check_anchors(
-                        datasets[i], model=model[0], thr=hyp["anchor_t"], imgsz=imgsz
+                        datasets[j], model=model[0], thr=hyp["anchor_t"], imgsz=imgsz
                     )  # run AutoAnchor
-            for i in range(len(model)):
-                model[i].half().float()  # pre-reduce anchor precision
+            for j in range(len(model)):
+                model[j].half().float()  # pre-reduce anchor precision
 
         callbacks.run("on_pretrain_routine_end", labels0, names)
-
-    # DDP mode
-    # if cuda and RANK != -1:
-    #     model[0] = smart_DDP(model[0])
 
     # Model attributes
     nl = (
@@ -405,7 +390,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         model[i].nc = nc  # attach number of classes to model
         model[i].hyp = hyp  # attach hyperparameters to model
         model[i].class_weights = (
-            labels_to_class_weights(dataset0.labels, nc).to(device) * nc
+                labels_to_class_weights(dataset0.labels, nc).to(device) * nc
         )  # attach class weights
         model[i].names = names
 
@@ -426,14 +411,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
     lambda_k = 0.1
-    lambda_d = 1.0
     conf_thres = 0.2
     iou_thres = 0.45
     alpha = 0.9996
-    alpha_conf = 0.99995
-    attention = True
-    mean = False
-    adaptive = False
     transformer = transforms.Compose(
         [
             transforms.ColorJitter(
@@ -443,23 +423,15 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             transforms.RandomErasing(p=0.5),
         ]
     )
-    if teacher and not mean and not adaptive:
-        cls_conf_thres = torch.tensor(
-            [0.85, 0.85, 0.85, 0.8, 0.77, 0.75, 0.75, 0.75],
-            requires_grad=False,
-            device=device,
-        )  # cityscapes to cityscapes foggy
-        # cls_conf_thres = torch.tensor(
-        #     [0.83, 0.82], requires_grad=False, device=device
-        # )  # kitti to cityscapes
-        # cls_conf_thres = torch.tensor(
-        #     [0.8], requires_grad=False, device=device
-        # )  # sim10k to cityscapes
+    if teacher:
+        cls_conf_thres = torch.tensor([0.8 for _ in range(nc)], requires_grad=False, device=device)
     compute_loss = ComputeLoss(model[0])  # init loss class
     image_loss = ImageLevelLoss()
     instance_loss = InstanceLevelLoss()
     consensus_loss = ConsensusLoss()
     consistency_loss = ConsistencyLoss()
+    cosine_decay_with_warmup = CosineDecayWithWarmup(lr_min=0.000005, lr_max=0.00005, nb=nb, total_epoch=epochs,
+                                                     warmup_epoch=3)
     print("Using {} model(s) and {} dataset(s)".format(len(model), len(data_dict)))
     callbacks.run("on_train_start")
     LOGGER.info(
@@ -501,10 +473,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
-        for (
-            i,
-            data,
-        ) in pbar:  # batch -----------------------------------------------------
+        for i, data in pbar:  # batch -----------------------------------------------------
             if not joint:
                 data = [data]
             loss = 0
@@ -512,61 +481,35 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 imgs, targets, paths, _ = data[domain]
                 callbacks.run("on_train_batch_start")
                 ni = i + nb * epoch  # number integrated batches (since train start)
-                imgs = (
-                    imgs.to(device, non_blocking=True).float() / 255
-                )  # uint8 to float32, 0-255 to 0.0-1.0
+                imgs = (imgs.to(device, non_blocking=True).float() / 255)  # uint8 to float32, 0-255 to 0.0-1.0
 
                 # Warmup
                 if ni <= nw:
                     xi = [0, nw]  # x interp
                     # compute_loss.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
-                    accumulate = max(
-                        1, np.interp(ni, xi, [1, nbs / batch_size]).round()
-                    )
+                    accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
                     for j, x in enumerate(optimizer.param_groups):
                         # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
-                        x["lr"] = np.interp(
-                            ni,
-                            xi,
-                            [
-                                hyp["warmup_bias_lr"] if j == 0 else 0.0,
-                                x["initial_lr"] * lf(epoch),
-                            ],
-                        )
+                        x["lr"] = np.interp(ni, xi,
+                                            [hyp["warmup_bias_lr"] if j == 0 else 0.0, x["initial_lr"] * lf(epoch)])
                         if "momentum" in x:
-                            x["momentum"] = np.interp(
-                                ni, xi, [hyp["warmup_momentum"], hyp["momentum"]]
-                            )
+                            x["momentum"] = np.interp(ni, xi, [hyp["warmup_momentum"], hyp["momentum"]])
 
                 # Multi-scale
                 if opt.multi_scale:
-                    sz = (
-                        random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs
-                    )  # size
+                    sz = (random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs)  # size
                     sf = sz / max(imgs.shape[2:])  # scale factor
                     if sf != 1:
-                        ns = [
-                            math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]
-                        ]  # new shape (stretched to gs-multiple)
-                        imgs = nn.functional.interpolate(
-                            imgs, size=ns, mode="bilinear", align_corners=False
-                        )
+                        ns = [math.ceil(x * sf / gs) * gs for x in
+                              imgs.shape[2:]]  # new shape (stretched to gs-multiple)
+                        imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
 
                 # Forward
                 with torch.cuda.amp.autocast(amp):
                     if not teacher:
-                        mask = []
-                        if joint and attention:
-                            mask = generate_mask_from_labels(
-                                targets, batch_size, device
-                            )
-                        pred, image_domain, instance_domain = model[0](
-                            imgs, mask
-                        )  # forward
+                        pred, image_domain, instance_domain = model[0](imgs, mask)  # forward
                         if domain == 0:
-                            loss0, loss_items = compute_loss(
-                                pred, targets.to(device)
-                            )  # loss scaled by batch_size
+                            loss0, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                             if RANK != -1:
                                 loss0 *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                             if opt.quad:
@@ -577,82 +520,41 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                         if joint:
                             loss += lambda_k * image_loss(image_domain, domain)
                             if len(instance_domain) != 0:
-                                loss += lambda_d * lambda_k * instance_loss(instance_domain, domain)
-                                loss += lambda_d * lambda_k * consensus_loss(image_domain, instance_domain)
-                    elif teacher and not mean:
+                                loss += lambda_k * instance_loss(instance_domain, domain)
+                                loss += lambda_k * consensus_loss(image_domain, instance_domain)
+                    elif teacher:
                         if domain == 0:
                             mask = generate_mask_from_labels(
                                 targets, batch_size, device
                             )
                         else:
                             with torch.no_grad():
+                                alpha_conf = 1 - cosine_decay_with_warmup.cal_alpha_conf(ni)
                                 labels, targets = model[1](imgs)[0]
                                 mask = []
-                                if not adaptive:
-                                    for scale in targets:
-                                        mask.append(
-                                            generate_mask_from_pred(scale.to(device))
-                                        )
-                                    _labels = non_max_suppression(
-                                        labels, conf_thres, iou_thres, max_det=1000
-                                    )
-                                    _conf_delta = cal_density(_labels, nc, device)
-                                    _conf_delta[_conf_delta < 0.05] = cls_conf_thres[
-                                        _conf_delta < 0.05
-                                    ]
-                                    # if density equals zero, means there is no object shows in this batch,
-                                    # so the threshold value will not be changed.
-                                    # [new!] and filter low confidence object?
-                                    # _conf_delta[_conf_delta < 0.5] = 0.5 # for cityscapes
-                                    # _conf_delta[_conf_delta < 0.5] = 0.5  # for kitti
-                                    # prevent dramatic numerical decline
-                                    cls_conf_thres = (
-                                        cls_conf_thres * alpha_conf
-                                        + _conf_delta * (1 - alpha_conf)
-                                    )
-                                    labels = non_max_suppression(
-                                        labels, cls_conf_thres, iou_thres, max_det=1000
-                                    )
-                                else:
-                                    labels = non_max_suppression(
-                                        labels, 0.8, iou_thres, max_det=1000
-                                    )
+                                for scale in targets:
+                                    mask.append(generate_mask_from_pred(scale.to(device)))
+                                _labels = non_max_suppression(labels, conf_thres, iou_thres, max_det=1000)
+                                _conf_delta = cal_density(_labels, nc, device)
+                                _conf_delta[_conf_delta < 0.05] = cls_conf_thres[_conf_delta < 0.05]
+                                # if density equals zero, means there is no object shows in this batch,
+                                # so the threshold value will not be changed.
+                                cls_conf_thres = (cls_conf_thres * alpha_conf+ _conf_delta * (1 - alpha_conf))
+                                labels = non_max_suppression(labels, cls_conf_thres, iou_thres, max_det=1000)
                                 targets = generate_labels(labels)
                                 imgs = transformer(imgs)
-                        if not attention or adaptive:
-                            mask = []
                         pred, image_domain, instance_domain = model[0](imgs, mask)
                         if targets is None:
                             targets = torch.zeros(0, 6)
-                        loss0, loss_items = compute_loss(
-                            pred, targets.to(device)
-                        )  # loss scaled by batch_size
+                        loss0, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                         if RANK != -1:
                             loss0 *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                         if opt.quad:
                             loss0 *= 4.0
                         loss += loss0
                         loss += lambda_k * image_loss(image_domain, domain)
-                        if not adaptive:
-                            loss += lambda_d * lambda_k * instance_loss(instance_domain, domain)
-                            loss += lambda_d * lambda_k * consensus_loss(image_domain, instance_domain)
-                        # loss += lambda_d * lambda_k * instance_loss(instance_domain, domain)
-                        # loss += lambda_d * lambda_k * consensus_loss(image_domain, instance_domain)
-                    else:  # Mean Teacher
-                        pred = model[0](imgs)[0]
-                        pred_ema = model[1](imgs)[0]
-                        if domain == 0:
-                            loss0, loss_items = compute_loss(
-                                pred, targets.to(device)
-                            )  # loss scaled by batch_size
-                            if RANK != -1:
-                                loss0 *= WORLD_SIZE  # gradient averaged between devices in DDP mode
-                            if opt.quad:
-                                loss0 *= 4.0
-                        else:
-                            loss0 = 0
-                        loss += loss0
-                        loss += lambda_k * consistency_loss(pred[1], pred_ema[1])
+                        loss += lambda_k * instance_loss(instance_domain, domain)
+                        loss += lambda_k * consensus_loss(image_domain, instance_domain)
 
             # Backward
             scaler.scale(loss).backward()
@@ -697,7 +599,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     return
 
             # Use EMA to update teacher model
-            if teacher and not mean and not adaptive:
+            if teacher:
                 ema_update(model[1], model[0], alpha=alpha)
 
             # end batch ------------------------------------------------------------------------------------------------
@@ -788,38 +690,12 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     stop = broadcast_list[0]
             if stop:
                 break  # must break all DDP ranks
-        if teacher and not mean and not adaptive:
+        if teacher:
             print(cls_conf_thres)
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
-    # if RANK in {-1, 0}:
-    #     LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
-    #     for f in last, best:
-    #         if f.exists():
-    #             strip_optimizer(f)  # strip optimizers
-    #             if f is best:
-    #                 LOGGER.info(f'\nValidating {f}...')
-    #                 results, _, _ = validate.run(
-    #                     data_dict,
-    #                     batch_size=batch_size // WORLD_SIZE * 2,
-    #                     imgsz=imgsz,
-    #                     model=attempt_load(f, device).half(),
-    #                     iou_thres=0.65 if is_coco else 0.60,  # best pycocotools at iou 0.65
-    #                     single_cls=single_cls,
-    #                     dataloader=val_loader,
-    #                     save_dir=save_dir,
-    #                     save_json=is_coco,
-    #                     verbose=True,
-    #                     plots=plots,
-    #                     callbacks=callbacks,
-    #                     compute_loss=compute_loss)  # val best model with plots
-    #                 if is_coco:
-    #                     callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
-
-    #     callbacks.run('on_train_end', last, best, epoch, results)
 
     torch.cuda.empty_cache()
-    # return results
 
 
 def parse_opt(known=False):
@@ -1008,7 +884,7 @@ def main(opt, callbacks=Callbacks()):
         ), "either --cfg or --weights must be specified"
         if opt.evolve:
             if opt.project == str(
-                ROOT / "runs/train"
+                    ROOT / "runs/train"
             ):  # if default project name, rename to runs/evolve
                 opt.project = str(ROOT / "runs/evolve")
             opt.exist_ok, opt.resume = (
@@ -1028,13 +904,13 @@ def main(opt, callbacks=Callbacks()):
         assert not opt.image_weights, f"--image-weights {msg}"
         assert not opt.evolve, f"--evolve {msg}"
         assert (
-            opt.batch_size != -1
+                opt.batch_size != -1
         ), f"AutoBatch with --batch-size -1 {msg}, please pass a valid --batch-size"
         assert (
-            opt.batch_size % WORLD_SIZE == 0
+                opt.batch_size % WORLD_SIZE == 0
         ), f"--batch-size {opt.batch_size} must be multiple of WORLD_SIZE"
         assert (
-            torch.cuda.device_count() > LOCAL_RANK
+                torch.cuda.device_count() > LOCAL_RANK
         ), "insufficient CUDA devices for DDP command"
         torch.cuda.set_device(LOCAL_RANK)
         device = torch.device("cuda", LOCAL_RANK)
@@ -1128,7 +1004,7 @@ def main(opt, callbacks=Callbacks()):
                 v = np.ones(ng)
                 while all(v == 1):  # mutate until a change occurs (prevent duplicates)
                     v = (
-                        g * (npr.random(ng) < mp) * npr.randn(ng) * npr.random() * s + 1
+                            g * (npr.random(ng) < mp) * npr.randn(ng) * npr.random() * s + 1
                     ).clip(0.3, 3.0)
                 for i, k in enumerate(hyp.keys()):  # plt.hist(v.ravel(), 300)
                     hyp[k] = float(x[i + 7] * v[i])  # mutate

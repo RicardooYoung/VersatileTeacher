@@ -132,12 +132,12 @@ def set_logging(name=LOGGING_NAME, verbose=True):
             name: {
                 "class": "logging.StreamHandler",
                 "formatter": name,
-                "level": level,}},
+                "level": level, }},
         "loggers": {
             name: {
                 "level": level,
                 "handlers": [name],
-                "propagate": False,}}})
+                "propagate": False, }}})
 
 
 set_logging(LOGGING_NAME)  # run before defining LOGGER
@@ -1147,6 +1147,7 @@ def imshow(path, im):
 
 cv2.imread, cv2.imwrite, cv2.imshow = imread, imwrite, imshow  # redefine
 
+
 # Variables ------------------------------------------------------------------------------------------------------------
 
 
@@ -1192,15 +1193,15 @@ def generate_labels(pred):
         return labels[0]
     else:
         return None
-    
-    
+
+
 def generate_mask_from_labels(labels, batch_size, device):
     mask = []
     scale = [80, 40, 20]
     filter = [7, 5, 3]
     filter = [GaussianBlur(filter[i], sigma=(0.5, 1.5)) for i in range(len(filter))]
     for i in range(len(scale)):
-        mask.append(np.random.randn(batch_size, scale[i], scale[i])/50 + 0.05)
+        mask.append(np.random.randn(batch_size, scale[i], scale[i]) / 50 + 0.05)
         mask[i] = torch.tensor(mask[i], device=device).half()
     for i in range(len(labels)):
         label = labels[i]
@@ -1210,7 +1211,8 @@ def generate_mask_from_labels(labels, batch_size, device):
             y = int(label[3] * scale[j])
             w = int(label[4] * scale[j] / 2)
             h = int(label[5] * scale[j] / 2)
-            mask[j][index, x-w:x+w+1, y-h:y+h+1] = 0.85 + torch.rand(1, device=device, requires_grad=False).half() * 0.1
+            mask[j][index, x - w:x + w + 1, y - h:y + h + 1] = 0.85 + torch.rand(1, device=device,
+                                                                                 requires_grad=False).half() * 0.1
             # if mask[j][index, x, y] < 0.8:
             #     mask[j][index, x, y] += 0.9
             # mask[j][index, x-w:x+w+1, y-h:y+h+1] += 0.9
@@ -1223,11 +1225,11 @@ def cal_thres(conf_delta, conf_delta_square, count):
     count[count == 0] = 1
     mean = conf_delta / count
     para = torch.mul(count, count - 1)
-    sigma = torch.sqrt((torch.pow(conf_delta - torch.mul(mean, count), 2) 
-                        - torch.mul(torch.pow(mean, 2), para) + 2*torch.mul(torch.mul(conf_delta, mean), count - 1)
+    sigma = torch.sqrt((torch.pow(conf_delta - torch.mul(mean, count), 2)
+                        - torch.mul(torch.pow(mean, 2), para) + 2 * torch.mul(torch.mul(conf_delta, mean), count - 1)
                         + conf_delta_square - torch.pow(conf_delta, 2)) / count)
     sigma = torch.where(torch.isnan(sigma), torch.full_like(sigma, 0.1), sigma)
-    return mean - 2*sigma
+    return mean - 2 * sigma
 
 
 def cal_density(labels, nc, device):
@@ -1235,6 +1237,21 @@ def cal_density(labels, nc, device):
     for _bobj in labels:
         for _obj in _bobj:
             temp = _obj[4] if _obj[4] < 0.99 else 0.99
-            density[int(_obj[5]), int(temp*10)] += 1
+            density[int(_obj[5]), int(temp * 10)] += 1
     density = torch.argmax(density, dim=1) / 10.0
     return density
+
+
+class CosineDecayWithWarmup:
+    def __init__(self, lr_min, lr_max, nb, total_epoch, warmup_epoch=3):
+        self.lr_min = lr_min
+        self.lr_max = lr_max
+        self.warmup_nb = warmup_epoch * nb
+        self.total_nb = total_epoch * nb
+
+    def cal_alpha_conf(self, ni):
+        if ni < self.warmup_nb:
+            return ni / self.warmup_nb * self.lr_max
+        else:
+            return self.lr_min + 0.5 * (self.lr_max - self.lr_min) * (
+                    1 + np.cos((ni - self.warmup_nb) / self.total_nb * np.pi))
