@@ -1,14 +1,9 @@
-# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
-"""
-Experimental modules
-"""
 import math
 from re import T
 
 import numpy as np
 import torch
 import torch.nn as nn
-
 
 from utils.downloads import attempt_download
 
@@ -121,12 +116,12 @@ class GRL(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, x):
-        x = x.neg()* ctx.const
+        x = x.neg() * ctx.const
         return x, None
 
     def grad_reverse(x, const):
         return GRL.apply(x, const)
-    
+
 
 class ResBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
@@ -159,8 +154,8 @@ class ImageDomainClassifier(nn.Module):
         self.flatten = nn.Flatten(start_dim=2)
         self.fc = nn.Linear(size * size, 2)
         # self.fc = nn.Sequential(
-            # nn.ReLU(inplace=True),
-            # nn.Linear(size * size, 2)
+        # nn.ReLU(inplace=True),
+        # nn.Linear(size * size, 2)
         # )
         self.const = const
 
@@ -208,7 +203,7 @@ class InstanceDomainClassifier(nn.Module):
             return x
         else:
             return torch.zeros(1)
-    
+
     def set_mask(self, mask):
         self.mask = mask
 
@@ -226,13 +221,13 @@ class IntegratedImageDiscriminator(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.level_1_branch_2_conv = nn.Sequential(
-            nn.Conv2d(in_channels=base_channels*2, out_channels=256, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=base_channels * 2, out_channels=256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels=256, out_channels=64, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
         )
         self.level_1_branch_3_conv = nn.Sequential(
-            nn.Conv2d(in_channels=base_channels*4, out_channels=512, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=base_channels * 4, out_channels=512, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels=512, out_channels=128, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -253,7 +248,7 @@ class IntegratedImageDiscriminator(nn.Module):
         )
         self.flatten = nn.Flatten(start_dim=2)
         self.fc = nn.Linear(20 * 20, 2)
-    
+
     def forward(self, x):
         if self.training == True:
             x[0] = GRL.grad_reverse(x[0], self.const)
@@ -275,7 +270,7 @@ class IntegratedImageDiscriminator(nn.Module):
             return x[0]
         else:
             return torch.zeros(1)
-        
+
 
 class IntegratedInstanceDiscriminator(nn.Module):
     def __init__(self, base_channels, const):
@@ -293,13 +288,13 @@ class IntegratedInstanceDiscriminator(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.level_1_branch_2_conv = nn.Sequential(
-            nn.Conv2d(in_channels=base_channels*2, out_channels=256, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=base_channels * 2, out_channels=256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels=256, out_channels=64, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
         )
         self.level_1_branch_3_conv = nn.Sequential(
-            nn.Conv2d(in_channels=base_channels*4, out_channels=512, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=base_channels * 4, out_channels=512, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels=512, out_channels=128, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -319,7 +314,7 @@ class IntegratedInstanceDiscriminator(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.level_3_conv_seq = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, padding=1)
-    
+
     def forward(self, x):
         if self.training == True:
             x[0] = GRL.grad_reverse(x[0], self.const)
@@ -353,7 +348,7 @@ class IntegratedInstanceDiscriminator(nn.Module):
             return x[0]
         else:
             return torch.zeros(1)
-    
+
     def set_mask(self, mask):
         self.mask = mask
 
@@ -362,11 +357,12 @@ class CenterAwareModule(nn.Module):
     def __init__(self, base_channels) -> None:
         super().__init__()
         self.ctr_conv = nn.Sequential(
-            nn.Conv2d(in_channels=base_channels, out_channels=int(base_channels/2), kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=base_channels, out_channels=int(base_channels / 2), kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=int(base_channels/2), out_channels=int(base_channels/4), kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=int(base_channels / 2), out_channels=int(base_channels / 4), kernel_size=3,
+                      padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=int(base_channels/4), out_channels=1, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=int(base_channels / 4), out_channels=1, kernel_size=3, padding=1),
             nn.Sigmoid()
         )
         self.cls_conv = nn.Sequential(
@@ -377,7 +373,7 @@ class CenterAwareModule(nn.Module):
             nn.Conv2d(in_channels=base_channels, out_channels=base_channels, kernel_size=3, padding=1),
             nn.Sigmoid()
         )
-    
+
     def forward(self, x):
         if self.training == True:
             with torch.no_grad():
@@ -388,6 +384,7 @@ class CenterAwareModule(nn.Module):
             return torch.mul(ctr, cls)
         else:
             return None
+
 
 class IntegratedDiscriminator(nn.Module):
     def __init__(self, base_channels, const):
@@ -402,13 +399,13 @@ class IntegratedDiscriminator(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.level_1_branch_2_conv = nn.Sequential(
-            nn.Conv2d(in_channels=base_channels*2, out_channels=256, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=base_channels * 2, out_channels=256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels=256, out_channels=64, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
         )
         self.level_1_branch_3_conv = nn.Sequential(
-            nn.Conv2d(in_channels=base_channels*4, out_channels=512, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=base_channels * 4, out_channels=512, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels=512, out_channels=128, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -429,7 +426,7 @@ class IntegratedDiscriminator(nn.Module):
         )
         self.flatten = nn.Flatten(start_dim=2)
         self.fc = nn.Linear(20 * 20, 2)
-    
+
     def forward(self, x):
         if self.training == True:
             x[0] = GRL.grad_reverse(x[0], self.const)

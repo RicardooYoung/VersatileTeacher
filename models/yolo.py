@@ -1,11 +1,3 @@
-# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
-"""
-YOLO-specific modules
-
-Usage:
-    $ python models/yolo.py --cfg yolov5s.yaml
-"""
-
 import argparse
 import contextlib
 import os
@@ -33,6 +25,7 @@ try:
     import thop  # for FLOPs computation
 except ImportError:
     thop = None
+
 
 class Detect(nn.Module):
     # YOLOv5 Detect head for detection models

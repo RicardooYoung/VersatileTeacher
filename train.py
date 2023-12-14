@@ -1,20 +1,3 @@
-# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
-"""
-Train a YOLOv5 model on a custom dataset.
-Models and datasets download automatically from the latest YOLOv5 release.
-
-Usage - Single-GPU training:
-    $ python train.py --data coco128.yaml --weights yolov5s.pt --img 640  # from pretrained (recommended)
-    $ python train.py --data coco128.yaml --weights '' --cfg yolov5s.yaml --img 640  # from scratch
-
-Usage - Multi-GPU DDP training:
-    $ python -m torch.distributed.run --nproc_per_node 4 --master_port 1 train.py --data coco128.yaml --weights yolov5s.pt --img 640 --device 0,1,2,3
-
-Models:     https://github.com/ultralytics/yolov5/tree/master/models
-Datasets:   https://github.com/ultralytics/yolov5/tree/master/data
-Tutorial:   https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data
-"""
-
 import argparse
 import math
 import os
@@ -539,7 +522,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                 _conf_delta[_conf_delta < 0.05] = cls_conf_thres[_conf_delta < 0.05]
                                 # if density equals zero, means there is no object shows in this batch,
                                 # so the threshold value will not be changed.
-                                cls_conf_thres = (cls_conf_thres * alpha_conf+ _conf_delta * (1 - alpha_conf))
+                                cls_conf_thres = (cls_conf_thres * alpha_conf + _conf_delta * (1 - alpha_conf))
                                 labels = non_max_suppression(labels, cls_conf_thres, iou_thres, max_det=1000)
                                 targets = generate_labels(labels)
                                 imgs = transformer(imgs)
