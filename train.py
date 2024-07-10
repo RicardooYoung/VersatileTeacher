@@ -490,6 +490,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 # Forward
                 with torch.cuda.amp.autocast(amp):
                     if not teacher:
+                        mask = []
                         pred, image_domain, instance_domain = model[0](imgs, mask)  # forward
                         if domain == 0:
                             loss0, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
