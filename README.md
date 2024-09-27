@@ -41,3 +41,18 @@ python train.py \
     --batch-size 16 \
 ```
 to train the student model.
+
+## Citation
+```
+@article{YANG2025111024,
+title = {Versatile Teacher: A class-aware teacher–student framework for cross-domain adaptation},
+journal = {Pattern Recognition},
+volume = {158},
+pages = {111024},
+year = {2025},
+issn = {0031-3203},
+doi = {https://doi.org/10.1016/j.patcog.2024.111024},
+url = {https://www.sciencedirect.com/science/article/pii/S0031320324007751},
+author = {Runou Yang and Tian Tian and Jinwen Tian},
+}
+```
